@@ -41,8 +41,6 @@ import { useListSelectionReset } from "./shared/hooks/useListSelectionReset";
 import { useSearchFetchTrigger } from "./shared/hooks/useSearchFetchTrigger";
 import { useScrollToSelection } from "./shared/hooks/useScrollToSelection";
 import { useClipboardItemRenderer } from "./shared/hooks/useClipboardItemRenderer";
-import { AnnouncementSystem } from "./shared/components/Announcement";
-import { useAnnouncements } from "./shared/hooks/useAnnouncements";
 import { useOverlays } from "./shared/hooks/useOverlays";
 import { useAutoUpdate } from "./shared/hooks/useAutoUpdate";
 import UpdateDialog from "./shared/components/UpdateDialog";
@@ -546,8 +544,6 @@ const App = () => {
       .then(setFileTransferPath)
       .catch(console.error);
   }, [setFileTransferPath]);
-
-  const { announcements, dismissAnnouncement } = useAnnouncements();
 
   const tagManagerSizeRef = useRef<{ width: number; height: number } | null>(null);
 
@@ -1070,11 +1066,6 @@ const App = () => {
         setTypeFilter={setTypeFilter}
         onBack={handleHeaderBack}
         onToggleChat={handleToggleHeaderChat}
-      />
-
-      <AnnouncementSystem
-        announcements={announcements}
-        onDismiss={dismissAnnouncement}
       />
 
       <main
