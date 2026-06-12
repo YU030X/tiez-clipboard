@@ -150,6 +150,8 @@
       "icons/app.icns"
     ],
     "targets": [
+      "nsis",
+      "msi",
       "dmg",
       "app"
     ],
