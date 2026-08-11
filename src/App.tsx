@@ -50,12 +50,7 @@ import type { QuickPasteHint, VirtualClipboardListHandle } from "./features/clip
 /** Must match privacy blur checks in `useClipboardItemRenderer` / `ClipboardItem`. */
 const BUILTIN_SENSITIVE_TAG_NAMES = ["sensitive", "密码", "password"] as const;
 import type { QuickPasteModifier } from "./features/app/types";
-import {
-  forceHideCompactPreviewWindow,
-  isCompactPreviewWindowSupported,
-  isCompactPreviewWarmupSupported,
-  warmupCompactPreviewWindow
-} from "./features/clipboard/lib/compactPreviewControls";
+import { forceHideCompactPreviewWindow } from "./features/clipboard/lib/compactPreviewControls";
 import { isMacPlatform } from "./shared/lib/platform";
 import { isTauriRuntime } from "./shared/lib/tauriRuntime";
 
@@ -717,16 +712,6 @@ const App = () => {
     showAppBorder
   });
 
-  // Pre-warm compact preview window only where warmup is safe.
-  // macOS keeps hover preview enabled but skips warmup to reduce UI stalls.
-  useEffect(() => {
-    if (!compactMode || !isCompactPreviewWindowSupported() || !isCompactPreviewWarmupSupported()) return;
-    const timer = setTimeout(() => {
-      warmupCompactPreviewWindow();
-    }, 2000); // 2s delay: avoids impacting app startup performance
-    return () => clearTimeout(timer);
-  }, [compactMode]);
-
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const unlisten = listen("force-hide-compact-preview", () => {
@@ -771,8 +756,9 @@ const App = () => {
       };
     }
 
+    // Pinned entries always sort first, so the slot count is enough to resolve every hint.
     invoke<ClipboardEntry[]>("get_clipboard_history", {
-      limit: 256,
+      limit: QUICK_PASTE_KEYS.length,
       offset: 0,
       contentType: null
     })

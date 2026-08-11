@@ -6,8 +6,10 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS, Transport};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::Notify;
 use tokio::time::sleep;
 
 #[derive(Clone, Debug)]
@@ -30,6 +32,17 @@ static MQTT_RUNNING: AtomicBool = AtomicBool::new(false);
 static MQTT_CONNECTED: AtomicBool = AtomicBool::new(false);
 static MQTT_RECONNECT_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static MQTT_TASK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Backoff applied while no usable config exists. The long ceiling is only safe because
+// `restart_mqtt_client` wakes the task through `idle_wakeup()` on every settings change.
+const MQTT_IDLE_MIN_WAIT_SECS: u64 = 5;
+const MQTT_IDLE_MAX_WAIT_SECS: u64 = 60;
+const MQTT_IDLE_BACKOFF_FACTOR: u64 = 2;
+
+fn idle_wakeup() -> &'static Notify {
+    static WAKEUP: OnceLock<Notify> = OnceLock::new();
+    WAKEUP.get_or_init(Notify::new)
+}
 
 struct MqttTaskGuard;
 
@@ -57,6 +70,8 @@ pub fn restart_mqtt_client(app: AppHandle) {
     // 如果之前达到最大重连次数导致任务退出，重新启动任务
     if !MQTT_TASK_ACTIVE.load(Ordering::Relaxed) {
         start_mqtt_client(app);
+    } else {
+        idle_wakeup().notify_one();
     }
 }
 
@@ -225,11 +240,14 @@ pub fn start_mqtt_client(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _guard = MqttTaskGuard;
         // Loop forever if enabled, using exponential backoff inside.
+        let mut idle_wait_secs = MQTT_IDLE_MIN_WAIT_SECS;
 
         loop {
             let config = get_mqtt_config(&app);
 
             if let Some(cfg) = config {
+                idle_wait_secs = MQTT_IDLE_MIN_WAIT_SECS;
+
                 if !MQTT_RUNNING.load(Ordering::Relaxed) {
                     info!(">>> [MQTT] Enabling MQTT client");
                     MQTT_RUNNING.store(true, Ordering::Relaxed);
@@ -553,6 +571,19 @@ pub fn start_mqtt_client(app: AppHandle) {
                     MQTT_RUNNING.store(false, Ordering::Relaxed);
                     let _ = app.emit("mqtt-status", "disconnected");
                 }
+
+                let woken = tokio::time::timeout(
+                    Duration::from_secs(idle_wait_secs),
+                    idle_wakeup().notified(),
+                )
+                .await
+                .is_ok();
+                idle_wait_secs = if woken {
+                    MQTT_IDLE_MIN_WAIT_SECS
+                } else {
+                    (idle_wait_secs * MQTT_IDLE_BACKOFF_FACTOR).min(MQTT_IDLE_MAX_WAIT_SECS)
+                };
+                continue;
             }
 
             sleep(Duration::from_secs(5)).await;

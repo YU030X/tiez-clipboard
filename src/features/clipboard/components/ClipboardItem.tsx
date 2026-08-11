@@ -52,11 +52,11 @@ const SPREADSHEET_SOURCE_RE = /\b(excel|et|wps|sheet|spreadsheet|calc)\b/i;
 const SPREADSHEET_APP_RE = /(?:^|[\\/])(excel|et|wps|wpssheet|soffice)(?:\.exe|\.app)?$/i;
 const STANDALONE_COLOR_RE = /^(#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\(\s*[^)]+\s*\))$/i;
 const COMPACT_PREVIEW_DEBUG = false;
+const COMPACT_PREVIEW_IDLE_DESTROY_MS = 3 * 60 * 1000;
 const IS_MACOS =
     typeof navigator !== "undefined" &&
     (/Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform));
 const COMPACT_PREVIEW_WINDOW_SUPPORTED = true;
-const COMPACT_PREVIEW_WARMUP_SUPPORTED = !IS_MACOS;
 const compactPreviewLog = (...args: unknown[]) => {
     if (!COMPACT_PREVIEW_DEBUG) return;
     const ts = new Date().toISOString();
@@ -141,6 +141,8 @@ let compactPreviewPendingShow = false;
 let compactPreviewPendingAnchor: CompactPreviewAnchor | null = null;
 let compactPreviewPendingTimer: ReturnType<typeof setTimeout> | null = null;
 let compactPreviewLifecycleListenersReady: Promise<void> | null = null;
+let compactPreviewIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let compactPreviewDestroying: Promise<void> | null = null;
 
 const loadWebviewWindowModule = async () => import("@tauri-apps/api/webviewWindow");
 
@@ -157,6 +159,64 @@ const clearCompactPreviewPendingState = () => {
     }
     compactPreviewPendingShow = false;
     compactPreviewPendingAnchor = null;
+};
+
+const cancelCompactPreviewIdleDestroy = () => {
+    if (compactPreviewIdleTimer) {
+        clearTimeout(compactPreviewIdleTimer);
+        compactPreviewIdleTimer = null;
+    }
+};
+
+const destroyCompactPreviewWindow = async (): Promise<void> => {
+    cancelCompactPreviewIdleDestroy();
+    if (compactPreviewDestroying) {
+        await compactPreviewDestroying;
+        return;
+    }
+
+    const previewWindow = compactPreviewWindow;
+    if (!previewWindow) return;
+
+    clearCompactPreviewPendingState();
+    compactPreviewWindow = null;
+    compactPreviewMounted = false;
+    compactPreviewMountedPromise = null;
+    compactPreviewLog("destroy idle compact preview window");
+
+    compactPreviewDestroying = previewWindow
+        .destroy()
+        .catch((err) => {
+            console.error("Failed to destroy compact preview window:", err);
+            compactPreviewLog("destroy compact preview window failed", err);
+        })
+        .finally(() => {
+            compactPreviewDestroying = null;
+        });
+    await compactPreviewDestroying;
+};
+
+const releaseIdleCompactPreviewWindow = async () => {
+    const previewWindow = compactPreviewWindow;
+    if (!previewWindow) return;
+
+    const visible = await previewWindow.isVisible().catch(() => false);
+    if (compactPreviewWindow !== previewWindow) return;
+    if (visible || compactPreviewPendingShow) {
+        compactPreviewLog("idle destroy deferred: preview still in use", { visible });
+        scheduleCompactPreviewIdleDestroy();
+        return;
+    }
+
+    await destroyCompactPreviewWindow();
+};
+
+const scheduleCompactPreviewIdleDestroy = () => {
+    if (compactPreviewIdleTimer || !compactPreviewWindow) return;
+    compactPreviewIdleTimer = setTimeout(() => {
+        compactPreviewIdleTimer = null;
+        void releaseIdleCompactPreviewWindow();
+    }, COMPACT_PREVIEW_IDLE_DESTROY_MS);
 };
 
 const resolveAnchorPhysical = async (
@@ -256,14 +316,16 @@ const placeAndShowPendingCompactPreview = async (
     heightLogical: number,
     options?: { keepPending?: boolean }
 ) => {
-    if (!compactPreviewPendingShow || !compactPreviewWindow || !compactPreviewPendingAnchor) {
+    const previewWindow = compactPreviewWindow;
+    if (!compactPreviewPendingShow || !previewWindow || !compactPreviewPendingAnchor) {
         compactPreviewLog("skip place/show: pending state not ready", {
             pendingShow: compactPreviewPendingShow,
-            hasWindow: !!compactPreviewWindow,
+            hasWindow: !!previewWindow,
             hasAnchor: !!compactPreviewPendingAnchor
         });
         return;
     }
+    cancelCompactPreviewIdleDestroy();
 
     const appWindow = getCurrentWindow();
     const scale = await appWindow.scaleFactor();
@@ -310,22 +372,27 @@ const placeAndShowPendingCompactPreview = async (
         scale
     });
 
+    if (compactPreviewWindow !== previewWindow) {
+        compactPreviewLog("skip place/show: preview window replaced while measuring");
+        return;
+    }
+
     setIgnoreBlurSafe(true);
     try {
-        await compactPreviewWindow.setPosition(new PhysicalPosition(target.x, target.y));
-        await compactPreviewWindow.show();
+        await previewWindow.setPosition(new PhysicalPosition(target.x, target.y));
+        await previewWindow.show();
         // Force top-most z-order refresh so preview is not occluded by the main top-most window.
         // macOS skips this toggle because frequent style-mask sync can cause UI stalls.
         if (!IS_MACOS) {
             try {
-                await compactPreviewWindow.setAlwaysOnTop(false);
-                await compactPreviewWindow.setAlwaysOnTop(true);
+                await previewWindow.setAlwaysOnTop(false);
+                await previewWindow.setAlwaysOnTop(true);
                 compactPreviewLog("refresh always-on-top stacking done");
             } catch (stackErr) {
                 compactPreviewLog("refresh always-on-top stacking failed", stackErr);
             }
         }
-        const visible = await compactPreviewWindow.isVisible().catch(() => null);
+        const visible = await previewWindow.isVisible().catch(() => null);
         compactPreviewLog("preview window shown", { visible, target });
     } catch (err) {
         setIgnoreBlurSafe(false);
@@ -351,12 +418,15 @@ const hideCompactPreviewGlobal = async () => {
         await previewWindow.hide();
         const visible = await previewWindow.isVisible().catch(() => null);
         compactPreviewLog("preview window hidden", { visible });
+        scheduleCompactPreviewIdleDestroy();
     } catch (err) {
         console.error("Failed to hide compact preview window:", err);
         compactPreviewLog("hide preview failed, reset window reference", err);
-        compactPreviewWindow = null;
-        compactPreviewMounted = false;
-        compactPreviewMountedPromise = null;
+        if (compactPreviewWindow === previewWindow) {
+            compactPreviewWindow = null;
+            compactPreviewMounted = false;
+            compactPreviewMountedPromise = null;
+        }
     }
 };
 
@@ -387,25 +457,45 @@ const waitForCompactPreviewMounted = async (): Promise<boolean> => {
     }
     if (!compactPreviewMountedPromise) {
         compactPreviewLog("waiting compact preview mounted event...");
-        compactPreviewMountedPromise = new Promise(async (resolve) => {
-            const timeout = setTimeout(() => {
-                compactPreviewLog("wait compact-preview-mounted timeout");
-                resolve(false);
-            }, 1200);
-            try {
-                const unlisten = await listen("compact-preview-mounted", () => {
-                    compactPreviewMounted = true;
+        compactPreviewMountedPromise = new Promise((resolve) => {
+            let unlisten: (() => void) | null = null;
+            let timeout: ReturnType<typeof setTimeout> | null = null;
+            let settled = false;
+
+            const finish = (mounted: boolean) => {
+                if (settled) return;
+                settled = true;
+                if (timeout) {
                     clearTimeout(timeout);
-                    unlisten();
-                    compactPreviewLog("received compact-preview-mounted");
-                    resolve(true);
+                    timeout = null;
+                }
+                unlisten?.();
+                unlisten = null;
+                resolve(mounted);
+            };
+
+            timeout = setTimeout(() => {
+                compactPreviewLog("wait compact-preview-mounted timeout");
+                finish(false);
+            }, 1200);
+
+            listen("compact-preview-mounted", () => {
+                compactPreviewMounted = true;
+                compactPreviewLog("received compact-preview-mounted");
+                finish(true);
+            })
+                .then((off) => {
+                    if (settled) {
+                        off();
+                        return;
+                    }
+                    unlisten = off;
+                })
+                .catch((err) => {
+                    console.error("Failed to listen for compact preview ready:", err);
+                    compactPreviewLog("listen compact-preview-mounted failed", err);
+                    finish(false);
                 });
-            } catch (err) {
-                clearTimeout(timeout);
-                console.error("Failed to listen for compact preview ready:", err);
-                compactPreviewLog("listen compact-preview-mounted failed", err);
-                resolve(false);
-            }
         });
     }
     return compactPreviewMountedPromise;
@@ -494,22 +584,31 @@ const tryReuseExistingCompactPreviewWindow = async (): Promise<WebviewWindow | n
 
 const ensureCompactPreviewWindow = async (): Promise<WebviewWindow | null> => {
     if (!COMPACT_PREVIEW_WINDOW_SUPPORTED) return null;
+    cancelCompactPreviewIdleDestroy();
     if (compactPreviewWindow) {
         compactPreviewMounted = true;
         compactPreviewMountedPromise = Promise.resolve(true);
         compactPreviewLog("reuse existing compact preview window");
+        scheduleCompactPreviewIdleDestroy();
         return compactPreviewWindow;
     }
     if (compactPreviewReady) return compactPreviewReady;
     if (compactPreviewCreating) return null;
-    const reusedBeforeCreate = await tryReuseExistingCompactPreviewWindow();
-    if (reusedBeforeCreate) {
-        return reusedBeforeCreate;
-    }
     compactPreviewLog("create compact preview window start");
     compactPreviewCreating = true;
     compactPreviewReady = (async () => {
         try {
+            // The label stays reserved until destroy() settles, so a pending teardown
+            // must finish before the same label can be reused or recreated.
+            if (compactPreviewDestroying) {
+                await compactPreviewDestroying;
+            }
+
+            const reusedBeforeCreate = await tryReuseExistingCompactPreviewWindow();
+            if (reusedBeforeCreate) {
+                return reusedBeforeCreate;
+            }
+
             const { WebviewWindow } = await loadWebviewWindowModule();
             const previewWindow = new WebviewWindow(COMPACT_PREVIEW_LABEL, {
                 url: "index.html?window=compact-preview",
@@ -573,34 +672,16 @@ const ensureCompactPreviewWindow = async (): Promise<WebviewWindow | null> => {
         } finally {
             compactPreviewCreating = false;
             compactPreviewReady = null;
+            // A window whose hover request went stale is never shown and never hidden,
+            // so the idle countdown has to start as soon as it exists.
+            scheduleCompactPreviewIdleDestroy();
         }
     })();
     return compactPreviewReady;
 };
 
-/**
- * Pre-warm the compact preview window so it's ready before the user hovers.
- * On macOS we deliberately skip warmup to reduce startup-time UI stalls.
- */
-const warmupCompactPreviewWindow = () => {
-    if (!COMPACT_PREVIEW_WINDOW_SUPPORTED || !COMPACT_PREVIEW_WARMUP_SUPPORTED) return;
-    // Only warm up if not already created/creating
-    if (compactPreviewWindow || compactPreviewCreating || compactPreviewReady) return;
-    compactPreviewLog("warmup: pre-creating compact preview window");
-    // Fire and forget - creates the window in the background
-    ensureCompactPreviewWindow().catch((err) => {
-        compactPreviewLog("warmup: failed", err);
-    });
-};
-
-const isCompactPreviewWindowSupported = () => COMPACT_PREVIEW_WINDOW_SUPPORTED;
-const isCompactPreviewWarmupSupported = () => COMPACT_PREVIEW_WARMUP_SUPPORTED;
-
 registerCompactPreviewControls({
-    forceHide: forceHideCompactPreviewWindow,
-    warmup: warmupCompactPreviewWindow,
-    supported: isCompactPreviewWindowSupported,
-    warmupSupported: isCompactPreviewWarmupSupported,
+    forceHide: forceHideCompactPreviewWindow
 });
 
 const getIcon = (type: string) => {

@@ -36,6 +36,16 @@ fn same_monitor(a: &tauri::Monitor, b: &tauri::Monitor) -> bool {
     monitor_bounds(a) == monitor_bounds(b)
 }
 
+/// 主窗口的隐藏/显示入口散落在托盘、边缘吸附、失焦、前端命令等多处，钩子挂在窗口过程上
+/// 才能一次覆盖全部路径。
+#[cfg(target_os = "windows")]
+pub fn ensure_idle_memory_hook(app: &AppHandle) {
+    crate::infrastructure::windows_api::idle_memory::install(app);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_idle_memory_hook(_app: &AppHandle) {}
+
 fn remap_fixed_window_position(
     window_pos: (i32, i32),
     window_size: (i32, i32),
@@ -72,6 +82,8 @@ fn remap_fixed_window_position(
 }
 
 pub fn toggle_window(app: &AppHandle) {
+    ensure_idle_memory_hook(app);
+
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(windows)]
         let mut active_center: Option<(i32, i32)> = None;
@@ -417,6 +429,8 @@ pub fn activate_window_focus(app_handle: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
+    ensure_idle_memory_hook(&app_handle);
+
     if let Some(window) = app_handle.get_webview_window("main") {
         #[cfg(target_os = "windows")]
         WindowExt::release_win_keys();
@@ -437,6 +451,8 @@ pub fn toggle_window_cmd(app_handle: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn focus_clipboard_window(app_handle: AppHandle) -> Result<(), String> {
+    ensure_idle_memory_hook(&app_handle);
+
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.set_focusable(true);
         let _ = window.show();
