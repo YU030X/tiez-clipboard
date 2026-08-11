@@ -6,7 +6,7 @@ on:
       git_ref:
         description: Branch or tag to build
         required: true
-        default: beta/1.0.0-beta.1
+        default: master
 
 jobs:
   release:
@@ -25,13 +25,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
     env:
       VITE_AI_DEFAULT_API_KEY: ${{ secrets.VITE_AI_DEFAULT_API_KEY }}
-      TIEZ_PLATFORM: macos
-      TIEZ_RELEASE_CHANNEL: beta
-      TIEZ_ANNOUNCEMENT_PING_URL: ${{ vars.TIEZ_ANNOUNCEMENT_PING_URL }}
-      VITE_TIEZ_ANNOUNCEMENT_PING_URL: ${{ vars.TIEZ_ANNOUNCEMENT_PING_URL }}
-      TIEZ_UPDATE_ENDPOINT: ${{ vars.TIEZ_UPDATE_ENDPOINT }}
-      VITE_TIEZ_UPDATE_ENDPOINT: ${{ vars.VITE_TIEZ_UPDATE_ENDPOINT }}
-      TIEZ_UPDATER_PUBLIC_KEY: ${{ vars.TIEZ_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,12 +43,6 @@ jobs:
       - name: install frontend dependencies
         run: npm ci
 
-      - name: prepare release config
-        run: node scripts/configure-release.mjs
-
-      - name: validate release metadata
-        run: npm run validate-release
-
       - uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
@@ -63,11 +50,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_AI_DEFAULT_API_KEY: ${{ secrets.VITE_AI_DEFAULT_API_KEY }}
-          TIEZ_ANNOUNCEMENT_PING_URL: ${{ vars.TIEZ_ANNOUNCEMENT_PING_URL }}
-          VITE_TIEZ_ANNOUNCEMENT_PING_URL: ${{ vars.TIEZ_ANNOUNCEMENT_PING_URL }}
-          TIEZ_UPDATE_ENDPOINT: ${{ vars.TIEZ_UPDATE_ENDPOINT }}
-          VITE_TIEZ_UPDATE_ENDPOINT: ${{ vars.VITE_TIEZ_UPDATE_ENDPOINT }}
-          TIEZ_UPDATER_PUBLIC_KEY: ${{ vars.TIEZ_UPDATER_PUBLIC_KEY }}
         with:
           tagName: beta-mac-v__VERSION__
           releaseName: TieZ macOS beta v__VERSION__

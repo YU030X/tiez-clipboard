@@ -1,0 +1,10 @@
+{
+  /* The base config excludes test files to keep `npm run build` green.
+     This config re-includes them so they are still type checked. */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vitest/importMeta"]
+  },
+  "include": ["src"],
+  "exclude": []
+}
