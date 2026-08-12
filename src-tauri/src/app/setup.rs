@@ -106,8 +106,8 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     setup_taskbar_listener(app);
 
-    // 12. Idle Memory Release Hook
-    crate::app::window_manager::ensure_idle_memory_hook(&app_handle);
+    // 12. Main Window Visibility Hook
+    crate::app::window_manager::ensure_window_visibility_hook(&app_handle);
 
     Ok(())
 }

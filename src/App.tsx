@@ -39,6 +39,7 @@ import { useFilteredHistory } from "./shared/hooks/useFilteredHistory";
 import { useKeyboardNavigation } from "./shared/hooks/useKeyboardNavigation";
 import { useListSelectionReset } from "./shared/hooks/useListSelectionReset";
 import { useSearchFetchTrigger } from "./shared/hooks/useSearchFetchTrigger";
+import { useWindowShownRefresh } from "./shared/hooks/useWindowShownRefresh";
 import { useScrollToSelection } from "./shared/hooks/useScrollToSelection";
 import { useClipboardItemRenderer } from "./shared/hooks/useClipboardItemRenderer";
 import { useOverlays } from "./shared/hooks/useOverlays";
@@ -736,6 +737,22 @@ const App = () => {
     },
     onChanged: () => {
       fetchHistory(true);
+    }
+  });
+
+  useWindowShownRefresh({
+    pageSize: PAGE_SIZE,
+    typeFilter,
+    searchActive: debouncedSearch.trim().length > 0,
+    onFetched: (entries) => {
+      // Returning `prev` untouched when nothing was missed keeps the loaded pages,
+      // scroll offset and selection intact across an ordinary hide/show cycle.
+      setHistory(prev => {
+        const known = new Set(prev.map(item => item.id));
+        const missing = entries.filter(item => item.id > 0 && !known.has(item.id));
+        if (missing.length === 0) return prev;
+        return missing.reduce((list, item) => insertHistoryItem(list, item), prev);
+      });
     }
   });
 
